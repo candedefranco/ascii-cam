@@ -47,7 +47,7 @@ Use a terminal with 24-bit color (iTerm2, Ghostty, WezTerm, Warp, VS Code) for t
 
 ## Browser build (WebAssembly)
 
-The same C engine (`src/render.c`) is compiled to WebAssembly with [Emscripten](https://emscripten.org) and published from `docs/`. In the browser, JavaScript grabs camera frames, hands the pixels to the C engine, and [xterm.js](https://xtermjs.org) draws the exact ANSI output the terminal app prints.
+The same C engine (`src/render.c`) is compiled to WebAssembly with [Emscripten](https://emscripten.org) and published from `docs/`. In the browser, JavaScript grabs camera frames and hands the pixels to the C engine. The engine returns the exact ANSI output the terminal app prints, and a small painter draws those cells onto a `<canvas>`. Terminal emulators cache one glyph per color, and a live camera produces thousands of colors per second, so painting the cells directly avoids that cache thrashing.
 
 ```bash
 brew install emscripten

@@ -9,7 +9,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
 <style>
   :root {
     --page: #010409; --win: #0d1117; --bar: #161b22; --border: #30363d;
@@ -34,7 +33,7 @@
   #fps { flex-shrink: 0; min-width: 52px; text-align: right; }
   .screen { position: relative; flex: 1; min-height: 0; background: var(--page); }
   #term { position: absolute; inset: 0; }
-  #term .xterm-viewport { overflow: hidden !important; background: var(--page) !important; }
+  #screen { position: absolute; left: 0; top: 0; }
 
   #start { position: absolute; inset: 0; display: grid; place-items: center; padding: 20px; background: var(--page); z-index: 2; }
   #start .box { max-width: 460px; }
@@ -81,7 +80,7 @@
       <span id="fps"></span>
     </div>
     <div class="screen">
-      <div id="term"></div>
+      <div id="term"><canvas id="screen"></canvas></div>
       <div id="err" hidden></div>
       <div id="start">
         <div class="box">
@@ -119,9 +118,6 @@
 <video id="video" playsinline muted autoplay
   style="position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none"></video>
 
-<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.18.0/lib/addon-webgl.js"></script>
 <script type="module">
 import createModule from "./ascii-cam.js";
 
@@ -143,35 +139,83 @@ if (IN_APP || !navigator.mediaDevices?.getUserMedia) {
 // ---------- WebAssembly engine ----------
 const M = await createModule();
 
-// ---------- Terminal ----------
+// ---------- Screen: paints the engine's ANSI output onto a canvas ----------
+// (A real terminal emulator caches one glyph per color; with thousands of camera
+// colors per second that cache thrashes, so we paint the cells ourselves.)
 await document.fonts.load('10px "JetBrains Mono"').catch(() => {});
 const small = matchMedia("(max-width: 600px)").matches;
-const term = new Terminal({
-  fontFamily: '"JetBrains Mono", ui-monospace, Menlo, monospace',
-  fontSize: small ? 7 : 12, // ~90 cols on phones, ~180 on laptops: enough detail, still ~30 fps lineHeight: 1, letterSpacing: 0,
-  disableStdin: true, cursorBlink: false, scrollback: 0,
-  theme: { background: "#010409", foreground: "#e6edf3" },
-});
-const fit = new FitAddon.FitAddon();
-term.loadAddon(fit);
-term.open($("term"));
-try { term.loadAddon(new WebglAddon.WebglAddon()); } catch { /* falls back to the DOM renderer */ }
-term.write("\x1b[?25l");
+const canvas = $("screen");
+const ctx = canvas.getContext("2d", { alpha: false });
+const FONT = '"JetBrains Mono", ui-monospace, Menlo, monospace';
+const view = { fontSize: small ? 7 : 12, cols: 80, rows: 24, cellW: 8, cellH: 16, dpr: 1 };
+
+function layoutScreen() {
+  const box = $("term").getBoundingClientRect();
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  ctx.font = `${view.fontSize * dpr}px ${FONT}`;
+  const cellW = ctx.measureText("M").width;
+  const cellH = Math.ceil(view.fontSize * dpr * 1.12);
+  view.cols = Math.max(10, Math.floor(box.width * dpr / cellW));
+  view.rows = Math.max(5, Math.floor(box.height * dpr / cellH));
+  view.cellW = cellW; view.cellH = cellH; view.dpr = dpr;
+  canvas.width = Math.ceil(view.cols * cellW);
+  canvas.height = view.rows * cellH;
+  canvas.style.width = canvas.width / dpr + "px";
+  canvas.style.height = canvas.height / dpr + "px";
+  canvas.style.left = (box.width - canvas.width / dpr) / 2 + "px";
+  canvas.style.top = (box.height - canvas.height / dpr) / 2 + "px";
+  ctx.font = `${view.fontSize * dpr}px ${FONT}`; // resizing the canvas resets its state
+  ctx.textBaseline = "top";
+}
+
+const decoder = new TextDecoder();
+const DEFAULT_FG = "#e6edf3", PAGE = "#010409";
+function paint(bytes) {
+  const s = decoder.decode(bytes);
+  const { cellW, cellH } = view, half = cellH / 2;
+  ctx.fillStyle = PAGE;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  let x = 0, y = 0, fg = DEFAULT_FG, bg = null, style = PAGE;
+  const setFill = (c) => { if (c !== style) { ctx.fillStyle = c; style = c; } };
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (code === 27) { // ESC [ params final-byte
+      let j = i + 2;
+      while (j < s.length && (s.charCodeAt(j) < 64 || s.charCodeAt(j) > 126)) j++;
+      if (s[j] === "m") {
+        const p = s.slice(i + 2, j).split(";");
+        for (let k = 0; k < p.length; k++) {
+          const n = +p[k];
+          if (n === 0) { fg = DEFAULT_FG; bg = null; }
+          else if ((n === 38 || n === 48) && p[k + 1] === "2") {
+            const c = `rgb(${p[k + 2]},${p[k + 3]},${p[k + 4]})`;
+            if (n === 38) fg = c; else bg = c;
+            k += 4;
+          }
+        }
+      } else if (s[j] === "H") { x = 0; y = 0; }
+      i = j;
+      continue;
+    }
+    if (code === 13) { x = 0; continue; }
+    if (code === 10) { y++; continue; }
+    const px = x * cellW, py = y * cellH;
+    if (code === 0x2580) { // ▀ half block: two real pixels, drawn as rectangles
+      setFill(fg); ctx.fillRect(px, py, cellW + 0.5, half + 0.5);
+      setFill(bg || PAGE); ctx.fillRect(px, py + half, cellW + 0.5, half + 0.5);
+    } else {
+      if (bg) { setFill(bg); ctx.fillRect(px, py, cellW + 0.5, cellH + 0.5); }
+      if (code !== 32) { setFill(fg); ctx.fillText(s[i], px, py); }
+    }
+    x++;
+  }
+}
 
 // ---------- Settings ----------
 const settings = { mode: 1, invert: false, mirror: true, contrast: 1.2, edge: 0.55, aspect: 2 };
 
-function measureAspect() {
-  const cell = term._core?._renderService?.dimensions?.css?.cell;
-  if (cell?.width) return cell.height / cell.width;
-  const screen = $("term").querySelector(".xterm-screen");
-  return screen ? (screen.clientHeight / term.rows) / (screen.clientWidth / term.cols) : 2;
-}
-let lastMode = -1, clearAtlas = 0;
+
 function apply() {
-  // The WebGL renderer caches glyphs per color; switching modes floods it with stale entries
-  // (cleared once the first frame of the new mode is on screen, so no old frames refill it)
-  if (settings.mode !== lastMode) { lastMode = settings.mode; clearAtlas = 2; }
   M._ac_set(settings.mode, settings.invert, settings.mirror, settings.contrast, settings.edge, settings.aspect);
   document.querySelectorAll("#modes button").forEach((b, i) => b.classList.toggle("on", i === settings.mode));
   $("invert").classList.toggle("on", settings.invert);
@@ -179,9 +223,8 @@ function apply() {
   $("level").textContent = settings.mode === 3 ? `edges ${settings.edge.toFixed(2)}` : `contrast ${settings.contrast.toFixed(1)}`;
 }
 function relayout() {
-  fit.fit();
-  settings.aspect = measureAspect();
-  term.write("\x1b[2J");
+  layoutScreen();
+  settings.aspect = view.cellH / view.cellW;
   apply();
 }
 addEventListener("resize", relayout);
@@ -198,7 +241,7 @@ const adjust = (dir) => {
   else settings.contrast = clamp(settings.contrast + dir * 0.1, 0.5, 3);
   apply();
 };
-const zoom = (dir) => { term.options.fontSize = clamp(term.options.fontSize + dir, 4, 20); relayout(); };
+const zoom = (dir) => { view.fontSize = clamp(view.fontSize + dir, 4, 20); relayout(); };
 $("invert").onclick = () => { settings.invert = !settings.invert; apply(); };
 $("mirror").onclick = () => { settings.mirror = !settings.mirror; apply(); };
 $("less").onclick = () => adjust(-1);
@@ -221,11 +264,11 @@ relayout();
 const video = $("video");
 const capture = document.createElement("canvas");
 const cctx = capture.getContext("2d", { willReadFrequently: true });
-let source = null, busy = false, lastFrame = 0, fps = 0;
+let source = null, lastFrame = 0, fps = 0;
 
 function frame(now) {
   requestAnimationFrame(frame);
-  if (!source || busy || now - lastFrame < FRAME_MS) return;
+  if (!source || now - lastFrame < FRAME_MS) return;
   fps = fps * 0.9 + (1000 / Math.max(1, now - lastFrame)) * 0.1;
   lastFrame = now;
 
@@ -238,20 +281,15 @@ function frame(now) {
     cctx.drawImage(video, 0, 0, w, h);
     const pixels = cctx.getImageData(0, 0, w, h).data;
     M.HEAPU8.set(pixels, M._ac_rgba_buffer(w, h));
-    ptr = M._ac_render(w, h, term.cols, term.rows);
+    ptr = M._ac_render(w, h, view.cols, view.rows);
   } else {
-    ptr = M._ac_render_demo(320, 240, term.cols, term.rows, now / 1000);
+    ptr = M._ac_render_demo(320, 240, view.cols, view.rows, now / 1000);
   }
-  // Wait for xterm to finish parsing before sending the next frame (no backlog)
-  busy = true;
-  term.write(M.HEAPU8.slice(ptr, ptr + M._ac_len()), () => {
-    busy = false;
-    if (clearAtlas && --clearAtlas === 0) term.clearTextureAtlas?.();
-  });
+  paint(M.HEAPU8.subarray(ptr, ptr + M._ac_len()));
   $("fps").textContent = `${fps.toFixed(0)} fps`;
 }
 requestAnimationFrame(frame);
-window.asciiCam = { term, M, settings }; // handy for poking at it from the devtools console
+window.asciiCam = { M, settings, view, paint }; // handy for poking at it from the devtools console
 
 function begin(kind) {
   source = kind;
