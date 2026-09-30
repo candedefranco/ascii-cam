@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#010409">
+<title>ascii-cam</title>
+<meta name="description" content="Your webcam, live, as ASCII art — a C engine compiled to WebAssembly.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+<style>
+  :root {
+    --page: #010409; --win: #0d1117; --bar: #161b22; --border: #30363d;
+    --fg: #e6edf3; --muted: #8b949e; --green: #7ee787; --blue: #79c0ff; --purple: #d2a8ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--page); color: var(--fg);
+    font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; overflow: hidden; }
+
+  .app { position: fixed; inset: 0; display: flex; flex-direction: column;
+    padding: calc(12px + env(safe-area-inset-top)) 12px calc(12px + env(safe-area-inset-bottom)); gap: 10px; }
+  .win { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--win);
+    border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .bar { display: flex; align-items: center; gap: 8px; padding: 9px 12px; background: var(--bar);
+    border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+  .dots { display: flex; gap: 6px; flex-shrink: 0; }
+  .dots span { width: 11px; height: 11px; border-radius: 50%; }
+  .dots span:nth-child(1) { background: #ff5f57; }
+  .dots span:nth-child(2) { background: #febc2e; }
+  .dots span:nth-child(3) { background: #28c840; }
+  .title { flex: 1; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #fps { flex-shrink: 0; min-width: 52px; text-align: right; }
+  .screen { position: relative; flex: 1; min-height: 0; background: var(--page); }
+  #term { position: absolute; inset: 0; }
+  #term .xterm-viewport { overflow: hidden !important; background: var(--page) !important; }
+
+  #start { position: absolute; inset: 0; display: grid; place-items: center; padding: 20px; background: var(--page); z-index: 2; }
+  #start .box { max-width: 460px; }
+  .prompt { font-size: 15px; margin: 0 0 14px; }
+  .prompt .u { color: var(--green); font-weight: 700; }
+  .prompt .d { color: var(--blue); font-weight: 700; }
+  .prompt .h { color: var(--muted); }
+  #start p.note { color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 20px; }
+  #start .actions { display: flex; flex-wrap: wrap; gap: 10px; }
+  .cta { font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; border-radius: 8px; padding: 10px 16px;
+    background: var(--green); color: var(--page); border: 0; }
+  .ghost { font: inherit; font-size: 13px; cursor: pointer; border-radius: 8px; padding: 10px 16px;
+    background: var(--bar); color: var(--fg); border: 1px solid var(--border); }
+  .ghost:hover { border-color: var(--blue); color: var(--blue); }
+  #msg { color: #ff7b72; font-size: 13px; line-height: 1.6; margin-top: 14px; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; align-items: center; }
+  .group { display: flex; gap: 4px; padding: 4px; background: var(--bar); border: 1px solid var(--border); border-radius: 8px; }
+  .controls button { font: inherit; font-size: 12px; cursor: pointer; padding: 6px 9px; border-radius: 6px;
+    background: transparent; color: var(--muted); border: 1px solid transparent; }
+  .controls button:hover { color: var(--fg); }
+  .controls button.on { color: var(--page); background: var(--blue); }
+  .controls a { font-size: 12px; color: var(--purple); text-decoration: none; padding: 6px 8px; }
+  .controls a:hover { text-decoration: underline; }
+  .k { opacity: .6; }
+  .controls button.on .k { opacity: .8; }
+  #err { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); width: max-content; max-width: calc(100% - 24px);
+    padding: 8px 12px; font-size: 12px; line-height: 1.5; background: rgba(120, 20, 30, .9); border: 1px solid rgba(255,120,130,.5);
+    border-radius: 8px; z-index: 3; }
+  #err[hidden] { display: none; }
+  @media (max-width: 600px) {
+    .k { display: none; }
+    .controls button { padding: 6px 7px; }
+    .hide-sm { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="win">
+    <div class="bar">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <span class="title">candela@austral: ~/ascii-cam — ./ascii-cam --wasm</span>
+      <span id="fps"></span>
+    </div>
+    <div class="screen">
+      <div id="term"></div>
+      <div id="err" hidden></div>
+      <div id="start">
+        <div class="box">
+          <p class="prompt"><span class="u">candela@austral</span><span class="h">:</span><span class="d">~/ascii-cam</span><span class="h">$ </span>./ascii-cam</p>
+          <p class="note">Your webcam, live, as ASCII art. The engine is plain C compiled to WebAssembly and runs entirely in your browser: your video never leaves your device.</p>
+          <div class="actions">
+            <button class="cta" id="go">▶ enable camera</button>
+            <button class="ghost" id="demo">no camera? run demo</button>
+          </div>
+          <div id="msg"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="group" id="modes"></div>
+    <div class="group">
+      <button id="invert" title="i">invert<span class="k"> [i]</span></button>
+      <button id="mirror" class="on" title="m">mirror<span class="k"> [m]</span></button>
+    </div>
+    <div class="group">
+      <button id="less" title="-">−</button>
+      <button id="level" disabled>contrast 1.2</button>
+      <button id="more" title="+">+</button>
+    </div>
+    <div class="group">
+      <button id="smaller" title="[">A−</button>
+      <button id="bigger" title="]">A+</button>
+    </div>
+    <a class="hide-sm" href="https://github.com/candedefranco/ascii-cam" target="_blank" rel="noopener">git clone →</a>
+  </div>
+</div>
+
+<video id="video" playsinline muted autoplay
+  style="position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none"></video>
+
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.18.0/lib/addon-webgl.js"></script>
+<script type="module">
+import createModule from "./ascii-cam.js";
+
+const $ = (id) => document.getElementById(id);
+const MODES = ["ascii", "color", "blocks", "edges", "matrix"];
+const CAPTURE_W = 480; // camera frames are downscaled to this width before sampling
+const FRAME_MS = 1000 / 30;
+
+const showError = (msg) => { $("err").textContent = msg; $("err").hidden = false; };
+addEventListener("error", (e) => showError("Error: " + (e.message || e.error)));
+addEventListener("unhandledrejection", (e) => showError("Error: " + (e.reason?.message || e.reason)));
+
+// In-app browsers (Instagram, TikTok, …) block the camera
+const IN_APP = /Instagram|FBAN|FBAV|FB_IAB|FBIOS|Line\/|TikTok|musical_ly|BytedanceWebview|Snapchat|Twitter/i.test(navigator.userAgent);
+if (IN_APP || !navigator.mediaDevices?.getUserMedia) {
+  $("msg").textContent = "This browser can't use the camera (common inside Instagram, TikTok, etc.). Open the menu ··· and choose \"Open in browser\", or run the demo.";
+}
+
+// ---------- WebAssembly engine ----------
+const M = await createModule();
+
+// ---------- Terminal ----------
+await document.fonts.load('10px "JetBrains Mono"').catch(() => {});
+const small = matchMedia("(max-width: 600px)").matches;
+const term = new Terminal({
+  fontFamily: '"JetBrains Mono", ui-monospace, Menlo, monospace',
+  fontSize: small ? 7 : 12, // ~90 cols on phones, ~180 on laptops: enough detail, still ~30 fps lineHeight: 1, letterSpacing: 0,
+  disableStdin: true, cursorBlink: false, scrollback: 0,
+  theme: { background: "#010409", foreground: "#e6edf3" },
+});
+const fit = new FitAddon.FitAddon();
+term.loadAddon(fit);
+term.open($("term"));
+try { term.loadAddon(new WebglAddon.WebglAddon()); } catch { /* falls back to the DOM renderer */ }
+term.write("\x1b[?25l");
+
+// ---------- Settings ----------
+const settings = { mode: 1, invert: false, mirror: true, contrast: 1.2, edge: 0.55, aspect: 2 };
+
+function measureAspect() {
+  const cell = term._core?._renderService?.dimensions?.css?.cell;
+  if (cell?.width) return cell.height / cell.width;
+  const screen = $("term").querySelector(".xterm-screen");
+  return screen ? (screen.clientHeight / term.rows) / (screen.clientWidth / term.cols) : 2;
+}
+let lastMode = -1, clearAtlas = 0;
+function apply() {
+  // The WebGL renderer caches glyphs per color; switching modes floods it with stale entries
+  // (cleared once the first frame of the new mode is on screen, so no old frames refill it)
+  if (settings.mode !== lastMode) { lastMode = settings.mode; clearAtlas = 2; }
+  M._ac_set(settings.mode, settings.invert, settings.mirror, settings.contrast, settings.edge, settings.aspect);
+  document.querySelectorAll("#modes button").forEach((b, i) => b.classList.toggle("on", i === settings.mode));
+  $("invert").classList.toggle("on", settings.invert);
+  $("mirror").classList.toggle("on", settings.mirror);
+  $("level").textContent = settings.mode === 3 ? `edges ${settings.edge.toFixed(2)}` : `contrast ${settings.contrast.toFixed(1)}`;
+}
+function relayout() {
+  fit.fit();
+  settings.aspect = measureAspect();
+  term.write("\x1b[2J");
+  apply();
+}
+addEventListener("resize", relayout);
+
+MODES.forEach((name, i) => {
+  const b = document.createElement("button");
+  b.innerHTML = `${name}<span class="k"> [${i + 1}]</span>`;
+  b.onclick = () => { settings.mode = i; apply(); };
+  $("modes").appendChild(b);
+});
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const adjust = (dir) => {
+  if (settings.mode === 3) settings.edge = clamp(settings.edge - dir * 0.05, 0.1, 2);
+  else settings.contrast = clamp(settings.contrast + dir * 0.1, 0.5, 3);
+  apply();
+};
+const zoom = (dir) => { term.options.fontSize = clamp(term.options.fontSize + dir, 4, 20); relayout(); };
+$("invert").onclick = () => { settings.invert = !settings.invert; apply(); };
+$("mirror").onclick = () => { settings.mirror = !settings.mirror; apply(); };
+$("less").onclick = () => adjust(-1);
+$("more").onclick = () => adjust(1);
+$("smaller").onclick = () => zoom(-1);
+$("bigger").onclick = () => zoom(1);
+addEventListener("keydown", (e) => {
+  const k = e.key.toLowerCase();
+  if (k >= "1" && k <= "5") { settings.mode = +k - 1; apply(); }
+  else if (k === "i") $("invert").click();
+  else if (k === "m") $("mirror").click();
+  else if (k === "+" || k === "=") adjust(1);
+  else if (k === "-" || k === "_") adjust(-1);
+  else if (k === "[") zoom(-1);
+  else if (k === "]") zoom(1);
+});
+relayout();
+
+// ---------- Frame loop ----------
+const video = $("video");
+const capture = document.createElement("canvas");
+const cctx = capture.getContext("2d", { willReadFrequently: true });
+let source = null, busy = false, lastFrame = 0, fps = 0;
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (!source || busy || now - lastFrame < FRAME_MS) return;
+  fps = fps * 0.9 + (1000 / Math.max(1, now - lastFrame)) * 0.1;
+  lastFrame = now;
+
+  let ptr;
+  if (source === "camera") {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw || video.readyState < 2) return;
+    const w = CAPTURE_W, h = Math.round(CAPTURE_W * vh / vw);
+    if (capture.width !== w || capture.height !== h) { capture.width = w; capture.height = h; }
+    cctx.drawImage(video, 0, 0, w, h);
+    const pixels = cctx.getImageData(0, 0, w, h).data;
+    M.HEAPU8.set(pixels, M._ac_rgba_buffer(w, h));
+    ptr = M._ac_render(w, h, term.cols, term.rows);
+  } else {
+    ptr = M._ac_render_demo(320, 240, term.cols, term.rows, now / 1000);
+  }
+  // Wait for xterm to finish parsing before sending the next frame (no backlog)
+  busy = true;
+  term.write(M.HEAPU8.slice(ptr, ptr + M._ac_len()), () => {
+    busy = false;
+    if (clearAtlas && --clearAtlas === 0) term.clearTextureAtlas?.();
+  });
+  $("fps").textContent = `${fps.toFixed(0)} fps`;
+}
+requestAnimationFrame(frame);
+window.asciiCam = { term, M, settings }; // handy for poking at it from the devtools console
+
+function begin(kind) {
+  source = kind;
+  $("start").remove();
+  relayout();
+}
+
+$("demo").onclick = () => begin("demo");
+$("go").onclick = async () => {
+  $("go").disabled = true;
+  $("msg").textContent = "";
+  try {
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }, audio: false });
+    } catch (err) {
+      if (err.name !== "OverconstrainedError") throw err;
+      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    }
+    video.srcObject = stream;
+    await video.play();
+    begin("camera");
+    setTimeout(() => { if (video.readyState < 2) showError("The camera isn't sending frames. Close other apps using it and reload."); }, 5000);
+  } catch (err) {
+    $("go").disabled = false;
+    $("msg").textContent = err.name === "NotAllowedError" ? "Camera permission was denied. Allow it in your browser settings, or run the demo."
+      : err.name === "NotFoundError" ? "No camera found. Try the demo."
+      : "Couldn't start the camera: " + (err.message || err);
+  }
+};
+if (new URLSearchParams(location.search).has("demo")) begin("demo");
+</script>
+</body>
+</html>

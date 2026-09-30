@@ -1,5 +1,7 @@
 # ascii-cam
 
+**▶ Try it in your browser:** https://candedefranco.github.io/ascii-cam/
+
 ```text
 $ ./ascii-cam
 ```
@@ -43,10 +45,20 @@ The first run asks for camera access for your terminal app. If you denied it, en
 
 Use a terminal with 24-bit color (iTerm2, Ghostty, WezTerm, Warp, VS Code) for the best result. Other terminals fall back to 256 colors automatically. Smaller fonts mean more "pixels": zoom out with `Cmd -`.
 
+## Browser build (WebAssembly)
+
+The same C engine (`src/render.c`) is compiled to WebAssembly with [Emscripten](https://emscripten.org) and published from `docs/`. In the browser, JavaScript grabs camera frames, hands the pixels to the C engine, and [xterm.js](https://xtermjs.org) draws the exact ANSI output the terminal app prints.
+
+```bash
+brew install emscripten
+make web                              # builds docs/ascii-cam.js + docs/ascii-cam.wasm
+python3 -m http.server -d docs 8000   # open http://localhost:8000
+```
+
 ## How it works
 
 ```text
-camera_mac.m          main.c
+camera_mac.m          main.c + render.c
 ┌──────────────┐     ┌──────────────────────────────────────────────────────────┐
 │ AVFoundation │ RGB │ sample grid ─▶ auto-levels ─▶ mode renderer ─▶ one write │
 │  640×480     ├────▶│ (crop to fit,  (2–98th pct    (ramp / color /   per frame│
